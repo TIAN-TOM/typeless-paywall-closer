@@ -1,6 +1,7 @@
 -- typeless_paywall_closer.lua
--- Auto-dismisses ONE specific Typeless alert: the floating-bar card titled
--- "Upgrade for enhanced accuracy". Nothing else in Typeless is touched.
+-- Auto-dismisses two specific Typeless floating-bar cards, matched by exact
+-- title: "Upgrade for enhanced accuracy" and "High demand". Both are paywall
+-- nudges with an X in the top-right corner. Nothing else in Typeless is touched.
 --
 -- How it works
 --   1. Attach to the Typeless process (bundle id now.typeless.desktop).
@@ -8,13 +9,18 @@
 --   3. Poll the small floating-bar window every 0.5 s (Chromium delivers no
 --      usable AX notifications for content changes, verified 2026-09-03; the
 --      observer is kept only as a bonus) and walk it looking for an
---      AXStaticText whose value equals the target title.
+--      AXStaticText whose value equals a target title.
 --   4. Climb to the enclosing tooltip card (AXSubrole AXUserInterfaceTooltip),
---      pick the unnamed small AXButton inside it (the X icon) and AXPress it.
+--      pick the unnamed small AXButton that supports AXPress (the X icon) and
+--      press it. Text buttons such as "Upgrade" never qualify.
+--
+-- Menu bar: a "⌧" item shows status, lets you pause, scan, dump, open the log.
+-- Log file: ~/Library/Logs/typeless-paywall-closer/activity.log
 --
 -- Debug helpers (Hammerspoon console, or `hs -c '...'` from a shell):
 --   typeless.dump()      -- print the AX tree of every small Typeless window
 --   typeless.scan("me")  -- run one scan now
+--   typeless.selfTest()  -- exercise the matcher with synthetic data
 --   typeless.config      -- tweak thresholds live
 
 local ax = hs.axuielement
@@ -23,7 +29,7 @@ local M = {}
 M.config = {
   bundleID      = "now.typeless.desktop",
   -- Matched after lower-casing and whitespace normalisation. Exact match only.
-  targetTitles  = { "upgrade for enhanced accuracy" },
+  targetTitles  = { "upgrade for enhanced accuracy", "high demand" },
   pollInterval  = 0.5,   -- seconds; primary trigger (Chromium posts no AX notifications for content changes)
   debounce      = 0.15,  -- seconds; coalesce bursts of AX notifications
   maxDepth      = 40,
@@ -31,8 +37,10 @@ M.config = {
   maxWindowWidth = 900,  -- floating bar is 750 wide; the settings hub is at least 988 wide and is skipped
   maxButtonSide = 40,    -- the X icon is 16px; anything bigger is a text/CTA button
   pressCooldown = 2.0,   -- seconds between presses
-  clickFallback = true,  -- synthesise a click if AXPress is refused
+  clickFallback = true,  -- synthesise a click if a pressable button still refuses AXPress
   logLevel      = "info",
+  logFile       = os.getenv("HOME") .. "/Library/Logs/typeless-paywall-closer/activity.log",
+  menubar       = true,
 }
 
 local log = hs.logger.new("typeless", M.config.logLevel)
@@ -41,6 +49,7 @@ M.log = log  -- typeless.log.setLogLevel("debug") to trace scans
 local state = {
   app = nil, appEl = nil, observer = nil, timer = nil, debounceTimer = nil,
   appWatcher = nil, watched = {}, lastPressAt = 0, trusted = false,
+  enabled = true, lastAction = nil, closedCount = 0, menubar = nil,
 }
 
 -- ---------------------------------------------------------------- helpers
@@ -73,15 +82,6 @@ local function fmtFrame(f)
   return string.format("%.0f,%.0f %.0fx%.0f", f.x, f.y, f.w, f.h)
 end
 
-local function isTargetTitle(text)
-  local n = normalize(text)
-  if n == "" then return false end
-  for _, t in ipairs(M.config.targetTitles) do
-    if n == t then return true end
-  end
-  return false
-end
-
 local function buttonName(btn)
   local parts = {}
   for _, a in ipairs({ "AXTitle", "AXDescription", "AXValue", "AXHelp" }) do
@@ -89,6 +89,15 @@ local function buttonName(btn)
     if type(v) == "string" and normalize(v) ~= "" then parts[#parts + 1] = normalize(v) end
   end
   return table.concat(parts, " | ")
+end
+
+local function hasPressAction(el)
+  local ok, names = pcall(function() return el:actionNames() end)
+  if not ok or type(names) ~= "table" then return false end
+  for _, n in ipairs(names) do
+    if n == "AXPress" then return true end
+  end
+  return false
 end
 
 -- Depth-first walk with a node budget. visit(el, depth) returns true to stop early.
@@ -117,7 +126,65 @@ local function isSmallWindow(win)
   return f.w <= M.config.maxWindowWidth
 end
 
--- ------------------------------------------------------------- matching
+-- ------------------------------------------------------------ file log
+
+local function ensureLogDir()
+  local dir = M.config.logFile:match("^(.*)/[^/]+$")
+  if dir and not hs.fs.attributes(dir) then hs.fs.mkdir(dir) end
+end
+
+-- Console + persistent file. Debug-level scan traces stay console-only.
+local function record(level, msg)
+  if level == "w" then log.w(msg) elseif level == "e" then log.e(msg) else log.i(msg) end
+  ensureLogDir()
+  local f = io.open(M.config.logFile, "a")
+  if f then
+    f:write(os.date("%Y-%m-%d %H:%M:%S"), " ", level:upper(), " ", msg, "\n")
+    f:close()
+  end
+end
+
+-- ------------------------------------------------- matching (pure functions)
+
+M.matcher = {}
+
+function M.matcher.normalize(s) return normalize(s) end
+
+function M.matcher.isTargetTitle(text)
+  local n = normalize(text)
+  if n == "" then return false end
+  for _, t in ipairs(M.config.targetTitles) do
+    if n == t then return true end
+  end
+  return false
+end
+
+function M.matcher.isCloseName(name)
+  local n = normalize(name)
+  if n == "" or n == "x" or n == "×" then return true end
+  if n:find("close", 1, true) or n:find("dismiss", 1, true) then return true end
+  return false
+end
+
+-- candidates: { {name=, frame={x,y,w,h}, pressable=bool}, ... }
+-- Returns the chosen candidate (or nil) and a reason string.
+function M.matcher.chooseCloseButton(candidates, containerFrame)
+  local best, bestScore
+  for _, c in ipairs(candidates) do
+    local f = c.frame
+    local small = f and f.w <= M.config.maxButtonSide and f.h <= M.config.maxButtonSide
+    if c.pressable and small and M.matcher.isCloseName(c.name) then
+      -- Prefer the top-right corner of the card: further right and higher up scores more.
+      local score = 0
+      if containerFrame and f then score = (f.x - containerFrame.x) - (f.y - containerFrame.y) end
+      if not best or score > bestScore then best, bestScore = c, score end
+    end
+  end
+  if best then return best, "ok" end
+  return nil, "no pressable unnamed small button"
+end
+
+-- ---------------------------------------------------------- AX matching
 
 -- From the title text node, climb to the tooltip card. Fall back to the
 -- grandparent (the Stack that holds title, description and the X button).
@@ -132,37 +199,29 @@ local function alertContainer(textEl)
   return fallback, "grandparent"
 end
 
-local function isCloseName(name)
-  if name == "" then return true end
-  if name:find("close", 1, true) or name:find("dismiss", 1, true) then return true end
-  return false
-end
-
--- Pick the X button: unnamed (or named close/dismiss), small, nearest the
--- top-right corner of the card. Text buttons such as "Upgrade" never qualify.
-local function pickCloseButton(container)
+local function collectButtons(container)
   local candidates = {}
   walk(container, function(el)
     if attr(el, "AXRole") == "AXButton" then
-      candidates[#candidates + 1] = { el = el, name = buttonName(el), frame = frameOf(el) }
+      candidates[#candidates + 1] = {
+        el = el, name = buttonName(el), frame = frameOf(el), pressable = hasPressAction(el),
+      }
     end
     return false
   end)
-  local cf = frameOf(container)
-  local best, bestScore
-  for _, c in ipairs(candidates) do
-    local f = c.frame
-    local small = f and f.w <= M.config.maxButtonSide and f.h <= M.config.maxButtonSide
-    if small and isCloseName(c.name) then
-      local score = 0
-      if cf and f then score = (f.x - cf.x) - (f.y - cf.y) end
-      if not best or score > bestScore then best, bestScore = c, score end
-    end
-  end
-  return best, candidates
+  return candidates
 end
 
-local function press(c, how)
+local function describeCandidates(all)
+  local names = {}
+  for _, c in ipairs(all) do
+    names[#names + 1] = string.format("[%s %s %s]", c.name == "" and "<unnamed>" or c.name,
+      fmtFrame(c.frame), c.pressable and "press" or "no-press")
+  end
+  return table.concat(names, " ")
+end
+
+local function press(c, how, title)
   local now = hs.timer.secondsSinceEpoch()
   if now - state.lastPressAt < M.config.pressCooldown then
     log.d("press suppressed by cooldown")
@@ -171,7 +230,9 @@ local function press(c, how)
   state.lastPressAt = now
   local ok, res = pcall(function() return c.el:performAction("AXPress") end)
   if ok and res then
-    log.i(string.format("closed paywall card via AXPress (container=%s, button=%s)", how, fmtFrame(c.frame)))
+    state.closedCount = state.closedCount + 1
+    state.lastAction = string.format("Closed \"%s\" at %s", title, os.date("%H:%M:%S"))
+    record("i", string.format("closed \"%s\" via AXPress (container=%s, button=%s)", title, how, fmtFrame(c.frame)))
     return true
   end
   if M.config.clickFallback and c.frame then
@@ -179,10 +240,12 @@ local function press(c, how)
     local saved = hs.mouse.absolutePosition()
     hs.eventtap.leftClick(center, 0)
     hs.mouse.absolutePosition(saved)
-    log.i(string.format("closed paywall card via synthetic click at %.0f,%.0f", center.x, center.y))
+    state.closedCount = state.closedCount + 1
+    state.lastAction = string.format("Clicked \"%s\" at %s", title, os.date("%H:%M:%S"))
+    record("w", string.format("AXPress refused; closed \"%s\" via synthetic click at %.0f,%.0f", title, center.x, center.y))
     return true
   end
-  log.w("AXPress refused and click fallback disabled; card left open")
+  record("w", string.format("AXPress refused for \"%s\" and click fallback disabled; card left open", title))
   return false
 end
 
@@ -191,11 +254,14 @@ function M.scan(reason)
   local wins = attr(state.appEl, "AXWindows") or {}
   for _, win in ipairs(wins) do
     if isSmallWindow(win) then
-      local titleEl
+      local titleEl, titleText
       local visited = walk(win, function(el)
-        if attr(el, "AXRole") == "AXStaticText" and isTargetTitle(attr(el, "AXValue")) then
-          titleEl = el
-          return true
+        if attr(el, "AXRole") == "AXStaticText" then
+          local v = attr(el, "AXValue")
+          if M.matcher.isTargetTitle(v) then
+            titleEl, titleText = el, v
+            return true
+          end
         end
         return false
       end)
@@ -204,15 +270,14 @@ function M.scan(reason)
       if titleEl then
         local container, how = alertContainer(titleEl)
         if not container then
-          log.w("target title found but no container; skipping")
+          record("w", "target title found but no container; skipping")
         else
-          local best, all = pickCloseButton(container)
+          local all = collectButtons(container)
+          local best, why = M.matcher.chooseCloseButton(all, frameOf(container))
           if best then
-            press(best, how)
+            press(best, how, titleText)
           else
-            local names = {}
-            for _, c in ipairs(all) do names[#names + 1] = "[" .. c.name .. " " .. fmtFrame(c.frame) .. "]" end
-            log.w("target card found but no close button matched; buttons: " .. table.concat(names, " "))
+            record("w", string.format("card \"%s\" found but %s; buttons: %s", titleText, why, describeCandidates(all)))
           end
         end
       end
@@ -227,6 +292,7 @@ local WIN_NOTIFS = { "AXResized", "AXMoved", "AXLayoutChanged", "AXCreated",
                      "AXValueChanged", "AXLiveRegionChanged", "AXTitleChanged" }
 
 local function scheduleScan(reason)
+  if not state.enabled then return end
   if state.debounceTimer then state.debounceTimer:stop() end
   state.debounceTimer = hs.timer.doAfter(M.config.debounce, function() M.scan(reason) end)
 end
@@ -258,11 +324,12 @@ local function attach()
   state.app = app
   state.appEl = ax.applicationElement(app)
   if not state.appEl then
-    log.w("could not get application element (accessibility permission missing?)")
+    record("w", "could not get application element (accessibility permission missing?)")
     state.app = nil
     return false
   end
   -- Chromium/Electron only expose web content to AX clients that ask for it.
+  -- Do NOT set AXEnhancedUserInterface=false afterwards: it is the same switch.
   pcall(function() state.appEl:setAttributeValue("AXManualAccessibility", true) end)
 
   state.observer = ax.observer.new(app:pid())
@@ -276,7 +343,7 @@ local function attach()
   for _, w in ipairs(attr(state.appEl, "AXWindows") or {}) do watchWindow(w) end
   state.observer:start()
   state.trusted = hs.accessibilityState()
-  log.i("attached to Typeless pid " .. app:pid() .. (state.trusted and "" or " (no Accessibility permission yet)"))
+  record("i", "attached to Typeless pid " .. app:pid() .. (state.trusted and "" or " (no Accessibility permission yet)"))
   scheduleScan("attach")
   return true
 end
@@ -284,22 +351,136 @@ end
 local function tick()
   -- Permission granted after we attached: rebuild the observer so watchers actually register.
   if state.observer and not state.trusted and hs.accessibilityState() then
-    log.i("Accessibility permission granted; re-attaching")
+    record("i", "Accessibility permission granted; re-attaching")
     detach()
   end
   if not state.observer then
     attach()
     return
   end
+  if not state.enabled then return end
   for _, w in ipairs(attr(state.appEl, "AXWindows") or {}) do watchWindow(w) end
   M.scan("poll")
 end
 
+-- -------------------------------------------------------------- menu bar
+
+local function buildMenu()
+  local items = {}
+  items[#items + 1] = {
+    title = state.enabled and "Enabled" or "Paused",
+    checked = state.enabled,
+    fn = function() M.setEnabled(not state.enabled) end,
+  }
+  items[#items + 1] = { title = "-" }
+  items[#items + 1] = {
+    title = hs.accessibilityState() and "Accessibility: granted" or "Accessibility: missing",
+    disabled = true,
+  }
+  items[#items + 1] = {
+    title = state.app and ("Typeless: attached (pid " .. state.app:pid() .. ")") or "Typeless: not running",
+    disabled = true,
+  }
+  items[#items + 1] = {
+    title = state.lastAction or "No cards closed yet",
+    disabled = true,
+  }
+  if state.closedCount > 0 then
+    items[#items + 1] = { title = "Closed this session: " .. state.closedCount, disabled = true }
+  end
+  items[#items + 1] = { title = "-" }
+  items[#items + 1] = { title = "Scan now", fn = function() M.scan("menu") end }
+  items[#items + 1] = { title = "Dump AX tree to console", fn = function() hs.openConsole(); M.dump() end }
+  items[#items + 1] = { title = "Open log file", fn = function() ensureLogDir(); hs.open(M.config.logFile) end }
+  if not hs.accessibilityState() then
+    items[#items + 1] = {
+      title = "Open Accessibility settings…",
+      fn = function()
+        hs.accessibilityState(true)
+        hs.urlevent.openURL("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+      end,
+    }
+  end
+  items[#items + 1] = { title = "-" }
+  items[#items + 1] = { title = "Reload Hammerspoon", fn = function() hs.reload() end }
+  return items
+end
+
+local function setupMenubar()
+  if not M.config.menubar or state.menubar then return end
+  state.menubar = hs.menubar.new()
+  if not state.menubar then return end
+  state.menubar:setTitle("⌧")
+  state.menubar:setTooltip("Typeless paywall closer")
+  state.menubar:setMenu(buildMenu)
+end
+
+function M.setEnabled(on)
+  state.enabled = on and true or false
+  record("i", state.enabled and "resumed" or "paused")
+  if state.menubar then state.menubar:setTitle(state.enabled and "⌧" or "⌧∙") end
+  return M
+end
+
+-- ------------------------------------------------------------- self test
+
+-- Exercises the pure matcher with synthetic data. Returns ok, failures.
+function M.selfTest()
+  local failures = {}
+  local function check(name, cond)
+    if not cond then failures[#failures + 1] = name end
+  end
+  local m = M.matcher
+
+  check("title exact",         m.isTargetTitle("Upgrade for enhanced accuracy"))
+  check("title whitespace",    m.isTargetTitle("  Upgrade  for\nEnhanced Accuracy "))
+  check("title high demand",   m.isTargetTitle("High demand"))
+  check("title body rejected", not m.isTargetTitle("Upgrade to Typeless Pro for unlimited words, enhanced accuracy, and priority access during high demand."))
+  check("title partial",       not m.isTargetTitle("Upgrade"))
+  check("title punctuation",   not m.isTargetTitle("High demand!"))
+  check("title empty",         not m.isTargetTitle(""))
+  check("title nil",           not m.isTargetTitle(nil))
+
+  check("close empty",   m.isCloseName(""))
+  check("close word",    m.isCloseName("Close"))
+  check("close dismiss", m.isCloseName("dismiss"))
+  check("close x",       m.isCloseName("x"))
+  check("close times",   m.isCloseName("×"))
+  check("close upgrade", not m.isCloseName("Upgrade"))
+
+  -- Card geometry from the real 2026-09-03 hit: card ~700x350, X at top-right 16x16.
+  local card = { x = 380, y = 460, w = 700, h = 350 }
+  local xBtn      = { name = "",        frame = { x = 1044, y = 476, w = 16, h = 16 },  pressable = true }
+  local upgrade   = { name = "upgrade", frame = { x = 690,  y = 740, w = 120, h = 48 }, pressable = true }
+  local bigBlank  = { name = "",        frame = { x = 600,  y = 600, w = 80, h = 80 },  pressable = true }
+  local noPress   = { name = "",        frame = { x = 1000, y = 476, w = 16, h = 16 },  pressable = false }
+  local lowerX    = { name = "",        frame = { x = 1044, y = 700, w = 16, h = 16 },  pressable = true }
+
+  local best = m.chooseCloseButton({ upgrade, xBtn, bigBlank, noPress }, card)
+  check("choose x over others", best == xBtn)
+  check("reject upgrade only",  m.chooseCloseButton({ upgrade }, card) == nil)
+  check("reject big blank",     m.chooseCloseButton({ bigBlank }, card) == nil)
+  check("reject no AXPress",    m.chooseCloseButton({ noPress }, card) == nil)
+  check("prefer top-right",     m.chooseCloseButton({ lowerX, xBtn }, card) == xBtn)
+  check("empty candidates",     m.chooseCloseButton({}, card) == nil)
+
+  local ok = #failures == 0
+  if ok then
+    log.i("selfTest: all checks passed")
+  else
+    record("e", "selfTest FAILED: " .. table.concat(failures, ", "))
+  end
+  return ok, failures
+end
+
+-- ------------------------------------------------------------ start/stop
+
 function M.start()
   if not hs.accessibilityState() then
-    log.w("Hammerspoon lacks Accessibility permission; prompting")
+    record("w", "Hammerspoon lacks Accessibility permission; prompting")
     hs.accessibilityState(true)
   end
+  M.selfTest()
   if state.appWatcher then return M end
   state.appWatcher = hs.application.watcher.new(function(_, event, app)
     if not app or app:bundleID() ~= M.config.bundleID then return end
@@ -311,17 +492,19 @@ function M.start()
   end)
   state.appWatcher:start()
   state.timer = hs.timer.doEvery(M.config.pollInterval, tick)
+  setupMenubar()
   attach()
-  log.i("typeless paywall closer started")
+  record("i", "typeless paywall closer started")
   return M
 end
 
 function M.stop()
   if state.appWatcher then state.appWatcher:stop() end
   if state.timer then state.timer:stop() end
-  state.appWatcher, state.timer = nil, nil
+  if state.menubar then state.menubar:delete() end
+  state.appWatcher, state.timer, state.menubar = nil, nil, nil
   detach()
-  log.i("typeless paywall closer stopped")
+  record("i", "typeless paywall closer stopped")
   return M
 end
 
@@ -353,6 +536,7 @@ function M.dump(maxDepth)
           local v = attr(el, a)
           if type(v) == "string" and v ~= "" then bits[#bits + 1] = a:sub(3) .. "=" .. string.format("%q", v:sub(1, 60)) end
         end
+        if role == "AXButton" then bits[#bits + 1] = hasPressAction(el) and "actions=AXPress" or "actions=none" end
         print(string.rep("  ", depth) .. role .. (sub and ("/" .. sub) or "") .. " [" .. fmtFrame(frameOf(el)) .. "] " .. table.concat(bits, " "))
         return false
       end)
