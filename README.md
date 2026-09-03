@@ -99,8 +99,9 @@ hs -c 'typeless.log.setLogLevel("debug")'
 2. 轮询触发。Chromium 不会为内容变化发 AX 通知，注册了 90 种一条都收不到。扫描节奏跟着麦克风走：
    任一输入设备在用时，以及停用后的 10 秒内，每 0.15 秒扫一次；其余时间每 2 秒扫一次兜底。
    付费卡片只会随一次听写的响应到达，所以空闲时不值得高频扫。
-3. 只扫宽度不超过 900px 的窗口。悬浮条窗口标题是 "Status"，750×500，空闲时只有十几个节点。
-   设置主窗口至少 988 宽，会被跳过。
+3. 只扫子角色为 `AXDialog` 的窗口。悬浮条是 Electron 的 panel 窗口，标题 "Status"，子角色 `AXDialog`，
+   750×500，空闲时只有十几个节点；设置主窗口、登录和引导窗口是 `AXStandardWindow`，直接跳过。
+   没有子角色的窗口才退回宽度判断（不超过 900px 才扫）。
 4. 找到 `AXStaticText` 的值等于目标标题后，向上找到 `AXSubrole == AXUserInterfaceTooltip`
    的容器（对应 HTML `role="tooltip"`），只在容器内找按钮。
 5. 候选按钮必须同时满足：`actionNames` 里有 `AXPress`、无名或名为 close / dismiss / x / ×、

@@ -47,7 +47,7 @@ M.config = {
   debounce       = 0.15,  -- seconds; coalesce bursts of AX notifications
   maxDepth       = 40,
   maxNodes       = 2500,  -- per window, per scan
-  maxWindowWidth = 900,   -- floating bar is 750 wide; the settings hub is at least 988 wide and is skipped
+  maxWindowWidth = 900,   -- fallback only, for windows that report no AXSubrole (floating bar is 750, hub >= 988)
   maxButtonSide  = 40,    -- the X icon is 16px; anything bigger is a text/CTA button
   pressCooldown  = 1.0,   -- seconds between presses; two cards may follow each other
   clickFallback  = false, -- true = synthesise a click if a pressable button still refuses AXPress
@@ -134,12 +134,6 @@ local function walk(root, visit)
   return M.config.maxNodes - budget
 end
 
-local function isSmallWindow(win)
-  local f = frameOf(win)
-  if not f then return true end
-  return f.w <= M.config.maxWindowWidth
-end
-
 -- true / false, or nil when no input device can be queried.
 function M.micInUse()
   local ok, devs = pcall(hs.audiodevice.allInputDevices)
@@ -207,6 +201,21 @@ function M.matcher.chooseCloseButton(candidates, containerFrame)
   end
   if best then return best, "ok" end
   return nil, "no pressable unnamed small button"
+end
+
+-- Window filter. The floating bar is an AXDialog (Electron "panel" window,
+-- verified 2026-09-03); the settings hub, login and onboarding windows are
+-- AXStandardWindow. Width is only a fallback for windows without a subrole.
+function M.matcher.shouldScanWindow(subrole, width, cfg)
+  if subrole == "AXStandardWindow" then return false end
+  if subrole == "AXDialog" then return true end
+  if width == nil then return true end
+  return width <= cfg.maxWindowWidth
+end
+
+local function isScanWindow(win)
+  local f = frameOf(win)
+  return M.matcher.shouldScanWindow(attr(win, "AXSubrole"), f and f.w or nil, M.config)
 end
 
 -- Scheduler: decides whether this tick should scan.
@@ -289,7 +298,7 @@ function M.scan(reason)
   if not state.appEl then return end
   local wins = attr(state.appEl, "AXWindows") or {}
   for _, win in ipairs(wins) do
-    if isSmallWindow(win) then
+    if isScanWindow(win) then
       local titleEl, titleText
       local visited = walk(win, function(el)
         if attr(el, "AXRole") == "AXStaticText" then
@@ -536,6 +545,16 @@ function M.selfTest()
   check("prefer top-right",     m.chooseCloseButton({ lowerX, xBtn }, card) == xBtn)
   check("empty candidates",     m.chooseCloseButton({}, card) == nil)
 
+  -- Window filter (subroles observed on Typeless 2.5.0).
+  local wcfg = { maxWindowWidth = 900 }
+  check("window floating bar",   m.shouldScanWindow("AXDialog", 750, wcfg))
+  check("window wide dialog",    m.shouldScanWindow("AXDialog", 1400, wcfg))
+  check("window hub",            not m.shouldScanWindow("AXStandardWindow", 1080, wcfg))
+  check("window narrow standard", not m.shouldScanWindow("AXStandardWindow", 500, wcfg))
+  check("window unknown small",  m.shouldScanWindow(nil, 600, wcfg))
+  check("window unknown wide",   not m.shouldScanWindow(nil, 1200, wcfg))
+  check("window no frame",       m.shouldScanWindow(nil, nil, wcfg))
+
   -- Scheduler.
   local cfg = { activeHold = 10, idleInterval = 2.0 }
   local mode, until_ = m.scanDecision(100, true, 0, 0, cfg)
@@ -614,8 +633,8 @@ function M.dump(maxDepth)
     local f = frameOf(win)
     print(string.format("== window %d  title=%q  subrole=%s  frame=%s  %s", i,
       tostring(attr(win, "AXTitle")), tostring(attr(win, "AXSubrole")), fmtFrame(f),
-      isSmallWindow(win) and "" or "(large: skipped by scan)"))
-    if isSmallWindow(win) then
+      isScanWindow(win) and "(scanned)" or "(skipped by scan)"))
+    if isScanWindow(win) then
       walk(win, function(el, depth)
         local role = tostring(attr(el, "AXRole"))
         local sub = attr(el, "AXSubrole")
