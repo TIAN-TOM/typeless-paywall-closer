@@ -90,3 +90,13 @@ Typeless（macOS 语音输入，Electron 应用）免费版超过约 2000 字后
 - 重写后的代码于 17:24:08 再次在真实弹窗上验证通过，AXPress 预检查通过。累计真实关闭 3 次，未触发过鼠标模拟。
 - Obsidian 已改为 Homebrew cask 管理。应用层由 Obsidian 自带更新器静默升级；外壳层需要时手动
   `brew upgrade --cask --greedy obsidian hammerspoon`，未设定时任务。
+
+## 第二轮优化（2026-09-03 晚）
+
+- 对比 GitHub 上另外三个同类项目后采纳：麦克风触发的自适应轮询（借鉴 AD-Hider 的 CoreAudio 思路，
+  用 `hs.audiodevice:inUse()` 实现，任一输入设备在用及其后 10 秒每 0.15 秒扫一次，空闲每 2 秒兜底）；
+  AX 查询 1 秒超时防止 Typeless 卡死拖住 Hammerspoon；鼠标模拟兜底默认关闭；按钮冷却 2 秒改 1 秒；
+  README 增加隐私说明和同类项目对比。
+- 实测：单次扫描 2.9 ms，麦克风检查 0.37 ms，调度逻辑进了 `selfTest()`。
+- 同类项目结论：gateway 走本地代理改写服务端通知，卡片完全不出现但流量全经代理；popup-remover 改 asar，
+  仅 Windows；本项目信任面最小，代价是闪一下。

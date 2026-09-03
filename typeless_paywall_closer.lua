@@ -6,13 +6,18 @@
 -- How it works
 --   1. Attach to the Typeless process (bundle id now.typeless.desktop).
 --   2. Ask Chromium to expose its accessibility tree (AXManualAccessibility).
---   3. Poll the small floating-bar window every 0.5 s (Chromium delivers no
---      usable AX notifications for content changes, verified 2026-09-03; the
---      observer is kept only as a bonus) and walk it looking for an
---      AXStaticText whose value equals a target title.
---   4. Climb to the enclosing tooltip card (AXSubrole AXUserInterfaceTooltip),
+--   3. Poll the small floating-bar window. Chromium delivers no usable AX
+--      notifications for content changes (verified 2026-09-03), so polling is
+--      the trigger. The cadence adapts to the microphone: while any input
+--      device is in use, and for a short hold afterwards, scan every
+--      activeInterval; otherwise fall back to a slow idleInterval.
+--   4. Walk the window for an AXStaticText whose value equals a target title,
+--      climb to the enclosing tooltip card (AXSubrole AXUserInterfaceTooltip),
 --      pick the unnamed small AXButton that supports AXPress (the X icon) and
 --      press it. Text buttons such as "Upgrade" never qualify.
+--
+-- Privacy: the scan reads the text of the floating bar only to compare it with
+-- the target titles. Nothing it reads is stored, logged, or sent anywhere.
 --
 -- Menu bar: a "⌧" item shows status, lets you pause, scan, dump, open the log.
 -- Log file: ~/Library/Logs/typeless-paywall-closer/activity.log
@@ -20,27 +25,32 @@
 -- Debug helpers (Hammerspoon console, or `hs -c '...'` from a shell):
 --   typeless.dump()      -- print the AX tree of every small Typeless window
 --   typeless.scan("me")  -- run one scan now
---   typeless.selfTest()  -- exercise the matcher with synthetic data
+--   typeless.selfTest()  -- exercise the matcher and scheduler with synthetic data
+--   typeless.micInUse()  -- what the microphone trigger currently sees
 --   typeless.config      -- tweak thresholds live
 
 local ax = hs.axuielement
 local M = {}
 
 M.config = {
-  bundleID      = "now.typeless.desktop",
+  bundleID       = "now.typeless.desktop",
   -- Matched after lower-casing and whitespace normalisation. Exact match only.
-  targetTitles  = { "upgrade for enhanced accuracy", "high demand" },
-  pollInterval  = 0.5,   -- seconds; primary trigger (Chromium posts no AX notifications for content changes)
-  debounce      = 0.15,  -- seconds; coalesce bursts of AX notifications
-  maxDepth      = 40,
-  maxNodes      = 2500,  -- per window, per scan
-  maxWindowWidth = 900,  -- floating bar is 750 wide; the settings hub is at least 988 wide and is skipped
-  maxButtonSide = 40,    -- the X icon is 16px; anything bigger is a text/CTA button
-  pressCooldown = 2.0,   -- seconds between presses
-  clickFallback = true,  -- synthesise a click if a pressable button still refuses AXPress
-  logLevel      = "info",
-  logFile       = os.getenv("HOME") .. "/Library/Logs/typeless-paywall-closer/activity.log",
-  menubar       = true,
+  targetTitles   = { "upgrade for enhanced accuracy", "high demand" },
+  micTrigger     = true,  -- false = scan at activeInterval all the time
+  activeInterval = 0.15,  -- seconds between scans while the mic is (or was just) in use
+  activeHold     = 10,    -- seconds to keep scanning fast after the mic goes quiet
+  idleInterval   = 2.0,   -- seconds between scans when idle; also the maintenance cadence
+  axTimeout      = 1.0,   -- seconds before an AX query to Typeless is abandoned
+  debounce       = 0.15,  -- seconds; coalesce bursts of AX notifications
+  maxDepth       = 40,
+  maxNodes       = 2500,  -- per window, per scan
+  maxWindowWidth = 900,   -- floating bar is 750 wide; the settings hub is at least 988 wide and is skipped
+  maxButtonSide  = 40,    -- the X icon is 16px; anything bigger is a text/CTA button
+  pressCooldown  = 1.0,   -- seconds between presses; two cards may follow each other
+  clickFallback  = false, -- true = synthesise a click if a pressable button still refuses AXPress
+  logLevel       = "info",
+  logFile        = os.getenv("HOME") .. "/Library/Logs/typeless-paywall-closer/activity.log",
+  menubar        = true,
 }
 
 local log = hs.logger.new("typeless", M.config.logLevel)
@@ -50,6 +60,7 @@ local state = {
   app = nil, appEl = nil, observer = nil, timer = nil, debounceTimer = nil,
   appWatcher = nil, watched = {}, lastPressAt = 0, trusted = false,
   enabled = true, lastAction = nil, closedCount = 0, menubar = nil,
+  activeUntil = 0, lastScanAt = 0, lastMaintAt = 0, scanMode = "idle",
 }
 
 -- ---------------------------------------------------------------- helpers
@@ -126,6 +137,17 @@ local function isSmallWindow(win)
   return f.w <= M.config.maxWindowWidth
 end
 
+-- true / false, or nil when no input device can be queried.
+function M.micInUse()
+  local ok, devs = pcall(hs.audiodevice.allInputDevices)
+  if not ok or type(devs) ~= "table" or #devs == 0 then return nil end
+  for _, d in ipairs(devs) do
+    local ok2, u = pcall(function() return d:inUse() end)
+    if ok2 and u then return true end
+  end
+  return false
+end
+
 -- ------------------------------------------------------------ file log
 
 local function ensureLogDir()
@@ -184,6 +206,17 @@ function M.matcher.chooseCloseButton(candidates, containerFrame)
   return nil, "no pressable unnamed small button"
 end
 
+-- Scheduler: decides whether this tick should scan.
+-- micInUse: true / false / nil (nil = unknown, treated as active).
+-- Returns mode ("active" | "idle" | nil = skip) and the updated activeUntil.
+function M.matcher.scanDecision(now, micInUse, activeUntil, lastScanAt, cfg)
+  if micInUse == nil then return "active", activeUntil end
+  if micInUse then activeUntil = now + cfg.activeHold end
+  if now < activeUntil then return "active", activeUntil end
+  if now - lastScanAt >= cfg.idleInterval then return "idle", activeUntil end
+  return nil, activeUntil
+end
+
 -- ---------------------------------------------------------- AX matching
 
 -- From the title text node, climb to the tooltip card. Fall back to the
@@ -232,7 +265,7 @@ local function press(c, how, title)
   if ok and res then
     state.closedCount = state.closedCount + 1
     state.lastAction = string.format("Closed \"%s\" at %s", title, os.date("%H:%M:%S"))
-    record("i", string.format("closed \"%s\" via AXPress (container=%s, button=%s)", title, how, fmtFrame(c.frame)))
+    record("i", string.format("closed \"%s\" via AXPress (container=%s, button=%s, mode=%s)", title, how, fmtFrame(c.frame), state.scanMode))
     return true
   end
   if M.config.clickFallback and c.frame then
@@ -328,6 +361,10 @@ local function attach()
     state.app = nil
     return false
   end
+  -- Bound every AX query so a hung Typeless cannot freeze Hammerspoon. The
+  -- system-wide value covers child elements, which do not inherit per-element timeouts.
+  pcall(function() ax.systemWideElement():setTimeout(M.config.axTimeout) end)
+  pcall(function() state.appEl:setTimeout(M.config.axTimeout) end)
   -- Chromium/Electron only expose web content to AX clients that ask for it.
   -- Do NOT set AXEnhancedUserInterface=false afterwards: it is the same switch.
   pcall(function() state.appEl:setAttributeValue("AXManualAccessibility", true) end)
@@ -348,7 +385,7 @@ local function attach()
   return true
 end
 
-local function tick()
+local function maintain()
   -- Permission granted after we attached: rebuild the observer so watchers actually register.
   if state.observer and not state.trusted and hs.accessibilityState() then
     record("i", "Accessibility permission granted; re-attaching")
@@ -358,14 +395,37 @@ local function tick()
     attach()
     return
   end
-  if not state.enabled then return end
   for _, w in ipairs(attr(state.appEl, "AXWindows") or {}) do watchWindow(w) end
-  M.scan("poll")
+end
+
+local function tick()
+  local now = hs.timer.secondsSinceEpoch()
+  if now - state.lastMaintAt >= M.config.idleInterval then
+    state.lastMaintAt = now
+    maintain()
+  end
+  if not state.observer or not state.enabled then return end
+
+  local mic = nil
+  if M.config.micTrigger then mic = M.micInUse() end
+  local mode, activeUntil = M.matcher.scanDecision(now, mic, state.activeUntil, state.lastScanAt, M.config)
+  if activeUntil ~= state.activeUntil then
+    state.activeUntil = activeUntil
+  end
+  if mode then
+    if mode ~= state.scanMode then
+      log.d("scan mode -> " .. mode)
+      state.scanMode = mode
+    end
+    state.lastScanAt = now
+    M.scan(mode)
+  end
 end
 
 -- -------------------------------------------------------------- menu bar
 
 local function buildMenu()
+  local now = hs.timer.secondsSinceEpoch()
   local items = {}
   items[#items + 1] = {
     title = state.enabled and "Enabled" or "Paused",
@@ -381,6 +441,11 @@ local function buildMenu()
     title = state.app and ("Typeless: attached (pid " .. state.app:pid() .. ")") or "Typeless: not running",
     disabled = true,
   }
+  local micNote
+  if not M.config.micTrigger then micNote = "Scanning: always (mic trigger off)"
+  elseif now < state.activeUntil then micNote = "Scanning: fast (mic active or just used)"
+  else micNote = "Scanning: idle (every " .. M.config.idleInterval .. " s)" end
+  items[#items + 1] = { title = micNote, disabled = true }
   items[#items + 1] = {
     title = state.lastAction or "No cards closed yet",
     disabled = true,
@@ -424,7 +489,7 @@ end
 
 -- ------------------------------------------------------------- self test
 
--- Exercises the pure matcher with synthetic data. Returns ok, failures.
+-- Exercises the pure matcher and scheduler with synthetic data. Returns ok, failures.
 function M.selfTest()
   local failures = {}
   local function check(name, cond)
@@ -464,6 +529,19 @@ function M.selfTest()
   check("prefer top-right",     m.chooseCloseButton({ lowerX, xBtn }, card) == xBtn)
   check("empty candidates",     m.chooseCloseButton({}, card) == nil)
 
+  -- Scheduler.
+  local cfg = { activeHold = 10, idleInterval = 2.0 }
+  local mode, until_ = m.scanDecision(100, true, 0, 0, cfg)
+  check("mic on -> active",          mode == "active" and until_ == 110)
+  mode, until_ = m.scanDecision(105, false, 110, 104.9, cfg)
+  check("hold window -> active",     mode == "active" and until_ == 110)
+  mode = m.scanDecision(111, false, 110, 110.5, cfg)
+  check("idle, scanned recently",    mode == nil)
+  mode = m.scanDecision(113, false, 110, 110.5, cfg)
+  check("idle, due -> idle",         mode == "idle")
+  mode = m.scanDecision(113, nil, 0, 112.9, cfg)
+  check("mic unknown -> active",     mode == "active")
+
   local ok = #failures == 0
   if ok then
     log.i("selfTest: all checks passed")
@@ -491,9 +569,12 @@ function M.start()
     end
   end)
   state.appWatcher:start()
-  state.timer = hs.timer.doEvery(M.config.pollInterval, tick)
+  state.timer = hs.timer.doEvery(M.config.activeInterval, tick)
   setupMenubar()
   attach()
+  if M.config.micTrigger and M.micInUse() == nil then
+    record("w", "no input device could be queried; scanning at activeInterval all the time")
+  end
   record("i", "typeless paywall closer started")
   return M
 end
