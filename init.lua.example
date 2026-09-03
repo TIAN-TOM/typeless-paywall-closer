@@ -5,7 +5,7 @@ hs.autoLaunch(true)        -- start Hammerspoon at login
 typeless = require("typeless_paywall_closer")
 typeless.start()
 
--- Ctrl+Alt+Cmd+T: dump the Typeless accessibility tree to the Hammerspoon console.
+-- Control+Option+Command+T: dump the Typeless accessibility tree to the Hammerspoon console.
 hs.hotkey.bind({ "ctrl", "alt", "cmd" }, "T", function()
   hs.openConsole()
   typeless.dump()

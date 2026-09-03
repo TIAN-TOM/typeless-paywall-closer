@@ -6,7 +6,7 @@ type: note
 created: 2026-09-03
 updated: 2026-09-03
 status: evergreen
-summary: 评估第三方闭源工具后自己用 Hammerspoon 写了只关一条弹窗的脚本，记录 Typeless 内部机制和三个不在文档里的坑
+summary: 评估第三方闭源工具后自己用 Hammerspoon 写了只关两条付费弹窗的脚本，记录 Typeless 内部机制、三个不在文档里的坑和与 Codex 版的对比
 ---
 # Typeless 付费弹窗自动关闭：排查与实现复盘
 
@@ -79,3 +79,14 @@ Typeless（macOS 语音输入，Electron 应用）免费版超过约 2000 字后
 - [V2EX 讨论帖](https://www.v2ex.com/t/1225542)
 - [Electron accessibility 文档](https://www.electronjs.org/docs/latest/tutorial/accessibility)
 - [hs.axuielement 文档](https://www.hammerspoon.org/docs/hs.axuielement.html)
+
+## 后续改动（2026-09-03 下午）
+
+- 对比了 Codex 写的原生 Swift 版本。它没有设置 `AXManualAccessibility`，右上角判断以整个 750×500 透明画布为参照，
+  用 12:49:49 的真实坐标代入两条规则都不通过，所以关不掉真实弹窗。但它有四点值得借鉴，已全部搬进 Hammerspoon 版。
+- 新增第二个目标 "High demand"，卡片结构与第一种完全相同。
+- 候选按钮必须在 `actionNames` 里有 `AXPress`；菜单栏 `⌧` 图标带暂停开关和状态；动作与警告写入
+  `~/Library/Logs/typeless-paywall-closer/activity.log`；匹配逻辑抽成 `M.matcher` 纯函数，`selfTest()` 启动自跑。
+- 重写后的代码于 17:24:08 再次在真实弹窗上验证通过，AXPress 预检查通过。累计真实关闭 3 次，未触发过鼠标模拟。
+- Obsidian 已改为 Homebrew cask 管理。应用层由 Obsidian 自带更新器静默升级；外壳层需要时手动
+  `brew upgrade --cask --greedy obsidian hammerspoon`，未设定时任务。

@@ -17,6 +17,18 @@ Hammerspoon 脚本，自动关闭 Typeless（macOS，Electron）悬浮条里的�
 
 ## 安装
 
+一键方式，需要先装好 [Homebrew](https://brew.sh)：
+
+```bash
+git clone https://github.com/TIAN-TOM/typeless-paywall-closer.git && cd typeless-paywall-closer && ./install.sh
+```
+
+脚本会装 Hammerspoon、建符号链接、往 `~/.hammerspoon/init.lua` 追加启动代码，然后打开辅助功能设置页。
+之后按提示做三件事：Gatekeeper 询问时点"打开"，在辅助功能里打开 Hammerspoon，退出并重开一次 Hammerspoon。
+以后更新只需 `git pull` 再跑一次 `./install.sh`。卸载用 `./install.sh uninstall`，Hammerspoon 本身会保留。
+
+手动方式：
+
 ```bash
 brew install --cask hammerspoon
 ```
@@ -60,7 +72,7 @@ hs -c 'typeless.selfTest()'
 hs -c 'typeless.log.setLogLevel("debug")'
 ```
 
-快捷键 `Ctrl+Alt+Cmd+T` 会打开控制台并 dump 一次。成功关闭时日志里会有一行
+快捷键 `⌃⌥⌘T`（Control+Option+Command+T）会打开控制台并 dump 一次。成功关闭时日志里会有一行
 `closed "…" via AXPress`。`selfTest()` 用假数据跑匹配规则，启动时也会自动跑一遍，
 失败会写进日志。
 
@@ -92,3 +104,7 @@ hs -c 'typeless.log.setLogLevel("debug")'
 先 `hs -c 'typeless.dump()'` 看卡片出现时的树，对照 `typeless_paywall_closer.lua`
 顶部 `config` 里的阈值和 `alertContainer` / `M.matcher.chooseCloseButton` 两个函数调整。
 文案变了就改 `targetTitles`，改完跑一遍 `selfTest()`。
+
+## License
+
+MIT
