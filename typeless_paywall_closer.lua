@@ -35,7 +35,10 @@ local M = {}
 M.config = {
   bundleID       = "now.typeless.desktop",
   -- Matched after lower-casing and whitespace normalisation. Exact match only.
-  targetTitles   = { "upgrade for enhanced accuracy", "high demand" },
+  -- The first two are verified on Typeless 2.5.0 (English UI). The last two are
+  -- the 2.4.0-era titles reported by typeless-plusplus; harmless if they never appear.
+  targetTitles   = { "upgrade for enhanced accuracy", "high demand",
+                     "get unlimited words", "获取无限字数" },
   micTrigger     = true,  -- false = scan at activeInterval all the time
   activeInterval = 0.15,  -- seconds between scans while the mic is (or was just) in use
   activeHold     = 10,    -- seconds to keep scanning fast after the mic goes quiet
@@ -500,6 +503,10 @@ function M.selfTest()
   check("title exact",         m.isTargetTitle("Upgrade for enhanced accuracy"))
   check("title whitespace",    m.isTargetTitle("  Upgrade  for\nEnhanced Accuracy "))
   check("title high demand",   m.isTargetTitle("High demand"))
+  check("title 2.4 english",   m.isTargetTitle("Get unlimited words"))
+  check("title 2.4 chinese",   m.isTargetTitle("获取无限字数"))
+  check("title 2.4 body",      not m.isTargetTitle("Get unlimited words, enhanced accuracy, and priority access during high demand."))
+  check("title 2.4 button",    not m.isTargetTitle("升级"))
   check("title body rejected", not m.isTargetTitle("Upgrade to Typeless Pro for unlimited words, enhanced accuracy, and priority access during high demand."))
   check("title partial",       not m.isTargetTitle("Upgrade"))
   check("title punctuation",   not m.isTargetTitle("High demand!"))

@@ -114,12 +114,15 @@ hs -c 'typeless.log.setLogLevel("debug")'
 - 弹窗文案不在本地包里。服务端在 `/ai/voice_flow` 返回里带 `important_notification`，
   结构是 `{type: "paywall", display: {title, description, icon}, behavior, actions}`，
   `icon` 只有 `diamond`（Upgrade for enhanced accuracy）和 `sandglass`（High demand）两种。
-  客户端标记为 `paywall`，交给悬浮条渲染。改本地包没用。
+  客户端标记为 `paywall`，交给悬浮条渲染。在本地包里搜文案替换没有用；把处理 `paywall` 的两处调用打成空操作可以
+  （typeless-toolkit 就是这么做的），但要改 `app.asar`、处理完整性校验、在 macOS 上重签名，每次官方更新后重打。本项目不走这条路。
 - 卡片组件是 MUI Tooltip，`closable` 时右上角挂一个 `IconButton`，内含 16px `CloseIcon`，
   没有 `aria-label`。两种卡片结构相同。
 - `AXEnhancedUserInterface` 和 `AXManualAccessibility` 是同一个开关，把前者设 false
   会把整棵树关掉。
 - 真实弹窗多次被 AXPress 成功关闭，按钮 16×16，容器为 tooltip，从未触发过鼠标模拟。
+- `targetTitles` 另含 2.4.0 时期的 `Get unlimited words` / `获取无限字数`，来自 typeless-plusplus 的记录，本机未见过。
+  精确匹配整段标题，所以就算永远不出现也无害。
 
 ## 同类项目
 
@@ -127,9 +130,11 @@ hs -c 'typeless.log.setLogLevel("debug")'
 |---|---|---|---|
 | [JeasonKim/typeless-paywall-gateway](https://github.com/JeasonKim/typeless-paywall-gateway) | 用隐藏设置 `__DEV_API_HOST` 把 API 指到本地代理，改写返回里的 `paywall` 通知 | macOS、Windows | 卡片完全不出现，不需要辅助功能权限；但全部语音和转写流量经过本地代理，依赖一个官方随时可能删掉的隐藏开关，安装要 Node 和 pnpm |
 | [Ayndpa/typeless-popup-remover](https://github.com/Ayndpa/typeless-popup-remover) | 改 `app.asar` 让弹窗渲染函数直接 return，并关掉 Electron 完整性校验 | Windows | 卡片完全不出现；但修改了应用本体，每次升级都要重打补丁 |
+| [timmyagentic/typeless-plusplus](https://github.com/timmyagentic/typeless-plusplus) | 原生 Swift 菜单栏 App，同样走辅助功能树点 ×，另做账号管理和额度守护 | macOS | 开源、MIT、有公证；但源码没有设置 `AXManualAccessibility`，作者自述真实弹窗尚未验证 |
+| [Jia131313/typeless-toolkit](https://github.com/Jia131313/typeless-toolkit) | 扫描 `app.asar`，把处理 `paywall` 的两处调用等长替换成空操作，同步完整性校验并重签名 | macOS、Windows | 生态里 star 最多，功能是多账号、词库同步、设备重置的超集；卡片完全不出现，但修改应用本体，每次官方更新后要重打 |
 | [liuxiaoyu-fiveleven/Typeless-AD-Skipper](https://github.com/liuxiaoyu-fiveleven/Typeless-AD-Skipper) | 辅助功能树里找卡片点 ×，和本项目同路 | macOS | 闭源，ad-hoc 签名未公证，二进制带反调试 |
 
-本项目选择"渲染后立即关掉"这条路，信任面最小，代价是卡片会闪一下。如果闪动不可接受，gateway 是唯一能做到不出现的开源方案。
+本项目选择"渲染后立即关掉"这条路，不改包、不拦流量，信任面最小，代价是卡片会闪一下。如果闪动不可接受，gateway 和 toolkit 是能做到不出现的开源方案，前者经过本地代理，后者修改应用本体。
 
 ## Typeless 升级后失效怎么办
 
