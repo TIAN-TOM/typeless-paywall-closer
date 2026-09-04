@@ -1,48 +1,74 @@
-# typeless-paywall-closer
+<div align="center">
 
-Hammerspoon 脚本，自动关闭 Typeless（macOS，Electron）悬浮条里的两种付费提示卡片：
-**"Upgrade for enhanced accuracy"** 和 **"High demand"**。只处理这两条，不碰其他通知。
+# Typeless Paywall Closer
 
-不改 Typeless 本体，不碰网络流量，Typeless 升级后只要卡片结构不变就继续工作。
-代价是卡片会闪一下再消失，通常不到 0.2 秒。
+**Keeps the Typeless floating bar clear of upgrade nudges. Nothing else is touched.**
 
-## 文件
+[![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)](#requirements)
+[![Runs on Hammerspoon](https://img.shields.io/badge/runs%20on-Hammerspoon-4c9be8)](https://www.hammerspoon.org)
+[![Verified on Typeless 2.5.0](https://img.shields.io/badge/verified%20on-Typeless%202.5.0-2f7d32)](#verified-behaviour)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-| 文件 | 作用 |
-|---|---|
-| `typeless_paywall_closer.lua` | 全部逻辑。`~/.hammerspoon/typeless_paywall_closer.lua` 是指向它的符号链接，改完直接 `hs.reload()` 生效 |
-| `install.sh` | 一键安装、更新、卸载 |
-| `init.lua.example` | `~/.hammerspoon/init.lua` 的参考内容 |
-| `tools/asar_scan.js` | 不解包直接在 Typeless 的 `app.asar` 里搜字符串并打印上下文 |
-| `tools/asar_extract.js` | 把 `app.asar` 的 `dist/` 解到当前目录的 `typeless_dist/` |
-| `tools/cgwin.swift` | 用 CGWindowList 列出 Typeless 的所有窗口，不需要辅助功能权限 |
-| `docs/retrospective.md` | 排查与实现复盘 |
+English · [简体中文](README.zh-CN.md)
 
-运行时日志写在 `~/Library/Logs/typeless-paywall-closer/activity.log`，只记关闭、警告、启动和权限变化。
+</div>
 
-## 安装
+---
 
-一键方式，需要先装好 [Homebrew](https://brew.sh)：
+Typeless Paywall Closer is a small, auditable macOS utility that dismisses the two paywall cards
+Typeless shows in its floating bar, **"Upgrade for enhanced accuracy"** and **"High demand"**,
+the moment they render. It uses the macOS Accessibility API to press the card's own close button,
+exactly as you would. It does not patch the app, intercept traffic, or talk to the network.
+
+The trade-off is honest: the card is visible for a fraction of a second before it goes away,
+typically under 0.2 s. In exchange you keep an unmodified Typeless, survive app updates, and can
+read every line of what runs on your machine.
+
+## Highlights
+
+- **Surgical.** Matches two exact titles. Update notices, errors and every other card are left alone.
+- **Non-invasive.** No `app.asar` patching, no code-signing games, no local proxy. Typeless updates keep working as long as the card layout does.
+- **Always on.** A launchd agent supervises Hammerspoon: if it quits or crashes it is back within seconds, and it starts at login.
+- **Battery aware.** Scans every 0.05 s only while the microphone is in use (and for 30 s after). Idle, it checks every 2 s.
+- **Observable.** A menu-bar item shows permission state, attachment, scan mode and the last close. A log records only closes, warnings and lifecycle events.
+- **Self-checking.** A built-in self-test runs at every start and exercises the matcher and scheduler with synthetic data.
+- **Private by design.** Text read from the floating bar is compared with the target titles and discarded. Nothing is stored or sent.
+
+## Quick start
+
+Requires macOS and [Homebrew](https://brew.sh).
 
 ```bash
 git clone https://github.com/TIAN-TOM/typeless-paywall-closer.git && cd typeless-paywall-closer && ./install.sh
 ```
 
-脚本会装 Hammerspoon、建符号链接、往 `~/.hammerspoon/init.lua` 追加启动代码，然后打开辅助功能设置页。
-之后按提示做三件事：Gatekeeper 询问时点"打开"，在辅助功能里打开 Hammerspoon，退出并重开一次 Hammerspoon。
-以后更新只需 `git pull` 再跑一次 `./install.sh`。卸载用 `./install.sh uninstall`，Hammerspoon 本身会保留。
+The installer:
 
-手动方式：
+1. Installs Hammerspoon via Homebrew if it is missing.
+2. Symlinks the script into `~/.hammerspoon` and appends a start-up block to `init.lua`.
+3. Renders and loads the launchd agent `org.hammerspoon.keepalive`, then hands Hammerspoon over to launchd.
+4. Opens the Accessibility pane of System Settings.
+
+Then, once:
+
+1. If macOS asks whether to open Hammerspoon, click **Open**.
+2. In **System Settings › Privacy & Security › Accessibility**, enable **Hammerspoon**.
+3. Quit and reopen Hammerspoon. Until you do, the Accessibility API refuses requests to an already-running Typeless.
+
+A `⌧` item appears in the menu bar. That is the whole product.
+
+**Update:** `git pull`, then `./install.sh` again. **Uninstall:** `./install.sh uninstall` (Hammerspoon itself stays).
+**Skip the launchd agent:** `KEEPALIVE=0 ./install.sh`; Hammerspoon then relies on its login item only.
+
+<details>
+<summary>Manual installation</summary>
 
 ```bash
 brew install --cask hammerspoon
-```
-
-```bash
 ln -s "$PWD/typeless_paywall_closer.lua" ~/.hammerspoon/typeless_paywall_closer.lua
 ```
 
-`~/.hammerspoon/init.lua` 里加：
+Add to `~/.hammerspoon/init.lua`:
 
 ```lua
 require("hs.ipc")
@@ -51,25 +77,131 @@ typeless = require("typeless_paywall_closer")
 typeless.start()
 ```
 
-然后在 系统设置 > 隐私与安全性 > 辅助功能 里打开 Hammerspoon。
-**授权之后必须重启一次 Hammerspoon**，否则对已运行的 Typeless 发 AX 请求会一直返回
-"The accessibility API is disabled"。
+Optional but recommended, the launchd supervisor:
 
-## 菜单栏
+```bash
+sed "s|__HOME__|$HOME|g" launchd/org.hammerspoon.keepalive.plist > ~/Library/LaunchAgents/org.hammerspoon.keepalive.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.hammerspoon.keepalive.plist
+```
 
-菜单栏会出现一个 `⌧` 图标：
+Grant Accessibility to Hammerspoon in System Settings, then **quit and reopen Hammerspoon once**.
+Without the restart every AX request to Typeless returns "The accessibility API is disabled".
 
-- Enabled / Paused 开关。暂停后不再扫描，进程仍保持挂载。
-- 辅助功能权限状态、Typeless 是否已挂载、当前扫描档位、最近一次关闭的时间和本次会话关闭次数。
-- Scan now、Dump AX tree to console、Open log file、Reload Hammerspoon。
+</details>
 
-## 隐私
+## Requirements
 
-脚本需要辅助功能权限，这个权限允许它读取任何应用的界面。它实际只读 Typeless 悬浮条窗口里的文字，
-用来和两条目标标题比较，比较完即丢弃。听写过程中悬浮条可能显示实时转写，这些文字不会被记录、
-写入日志或发到任何地方。日志里只出现匹配到的标题、按钮坐标和时间。脚本不联网，不改任何文件。
+| | |
+|---|---|
+| OS | macOS (tested on macOS 26 / Darwin 25) |
+| Runtime | [Hammerspoon](https://www.hammerspoon.org), installed by `install.sh` |
+| Target | Typeless desktop, bundle id `now.typeless.desktop`, verified on 2.5.0 |
+| Permission | Accessibility, granted to Hammerspoon |
 
-## 调试
+## Menu bar
+
+The `⌧` item exposes everything you need day to day:
+
+- **Enabled / Paused.** Pausing stops scanning; the process stays attached.
+- **Status lines.** Accessibility granted or missing, Typeless attached (with pid) or not running, current scan mode, last close and closes this session.
+- **Actions.** Scan now, Dump AX tree to console, Open log file, Open Accessibility settings (when missing), Reload Hammerspoon.
+
+The icon changes to `⌧∙` while paused.
+
+## Staying alive
+
+Hammerspoon itself can be quit by hand, killed by a memory-pressure event, or simply not relaunched after
+a crash. A login item only fires at login, so a daytime exit leaves you without cover until the next
+restart. The installer therefore registers a user LaunchAgent:
+
+| Setting | Value |
+|---|---|
+| Label | `org.hammerspoon.keepalive` |
+| File | `~/Library/LaunchAgents/org.hammerspoon.keepalive.plist`, rendered from [`launchd/`](launchd/) |
+| Behaviour | `RunAtLoad` + `KeepAlive`, restart throttle 5 s |
+| launchd output | `~/Library/Logs/typeless-paywall-closer/hammerspoon-launchd.log` |
+
+Consequences worth knowing:
+
+- **Quit** from the Hammerspoon menu is undone within seconds. To stop it for real:
+
+  ```bash
+  launchctl bootout gui/$(id -u)/org.hammerspoon.keepalive
+  ```
+
+- To bring it back:
+
+  ```bash
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.hammerspoon.keepalive.plist
+  ```
+
+- **Reload Config** is unaffected. It reloads Lua inside the running process.
+- If Hammerspoon crashes on start, launchd retries every 5 s; the launchd log shows why.
+
+## Privacy and security
+
+The script needs the Accessibility permission, which in principle lets it read any app's UI.
+In practice it reads the text of the Typeless floating-bar window only to compare it with the target
+titles, then discards it. During dictation the bar may show a live transcript. That text is never
+logged, stored or transmitted. The activity log contains only the matched title, the close button's
+frame and a timestamp.
+
+The script makes no network requests and writes nothing except its own log file.
+It is about 650 lines of Lua and is meant to be read before it is trusted.
+
+## How it works
+
+1. **Attach.** Find the Typeless process by bundle id and set `AXManualAccessibility = true` on its
+   application element. Without it Chromium does not expose web content in the accessibility tree.
+   Every AX call carries a 1 s timeout, so a wedged Typeless cannot stall Hammerspoon.
+2. **Poll.** Chromium emits no usable AX notifications for content changes (90 notification types were
+   registered and none arrived). Scanning cadence follows the microphone: while any input device is in
+   use, and for 30 s afterwards, scan every 0.05 s; otherwise every 2 s. Paywall cards only arrive in the
+   response to a dictation, so idle time is not worth fast polling.
+3. **Pick the window.** Only windows whose subrole is `AXDialog` are scanned. The floating bar is an
+   Electron panel titled "Status", 750×500, with a dozen nodes when idle. The settings, login and
+   onboarding windows are `AXStandardWindow` and are skipped outright. Windows with no subrole fall back
+   to a width check (≤ 900 px).
+4. **Find the card.** Locate an `AXStaticText` whose value equals a target title, then climb to the
+   enclosing `AXUserInterfaceTooltip` container (the HTML `role="tooltip"` card). Buttons are searched
+   only inside that container.
+5. **Press the X.** A candidate must support `AXPress`, be unnamed or named close / dismiss / x / ×,
+   and be at most 40 px on a side. With several candidates the one nearest the container's top-right
+   corner wins. Text buttons such as "Upgrade" never qualify. Mouse simulation is off by default;
+   `clickFallback = true` enables it only if `AXPress` is refused.
+
+All thresholds live in the `config` table at the top of `typeless_paywall_closer.lua` and can be
+changed at runtime through `typeless.config`.
+
+## Verified behaviour
+
+Observed on Typeless 2.5.0, 2026-09-03:
+
+- The card copy is not in the local bundle. The server attaches an `important_notification` to the
+  `/ai/voice_flow` response, shaped `{type: "paywall", display: {title, description, icon}, behavior, actions}`.
+  `icon` is `diamond` (Upgrade for enhanced accuracy) or `sandglass` (High demand). Editing strings in
+  `app.asar` therefore does nothing; neutering the two `paywall` call sites works but means patching,
+  re-signing and redoing it after every update. This project deliberately does not go there.
+- The card is a MUI Tooltip. When `closable`, an `IconButton` with a 16 px `CloseIcon` and no `aria-label`
+  sits in the top-right corner. Both cards share the structure.
+- `AXEnhancedUserInterface` and `AXManualAccessibility` are the same switch; setting the former to false
+  collapses the whole tree.
+- Real cards were closed repeatedly via `AXPress` on a 16×16 button inside a tooltip container.
+  The mouse fallback has never fired.
+- `targetTitles` also lists the 2.4.0-era titles `Get unlimited words` / `获取无限字数`, reported by
+  typeless-plusplus and never seen here. Matching is exact on the whole title, so they are harmless.
+
+## Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Cards are not closed | `pgrep -x Hammerspoon`. If nothing, `launchctl print gui/$(id -u)/org.hammerspoon.keepalive` and the launchd log. |
+| Menu says *Accessibility: missing* | Enable Hammerspoon in System Settings › Privacy & Security › Accessibility, then quit and reopen Hammerspoon. |
+| Menu says *Typeless: not running* | Typeless is not running or its bundle id changed. `hs -c 'typeless.dump()'` lists what is visible. |
+| Typeless updated and cards stay | `hs -c 'typeless.dump()'` while a card is showing, then adjust `config`, `alertContainer` or `M.matcher.chooseCloseButton`. New copy goes into `targetTitles`; finish with `hs -c 'typeless.selfTest()'`. |
+| Typeless UI in another language | Paywall copy is served per account language. Add that language's titles to `targetTitles`. |
+
+Debug helpers, from a shell with `hs.ipc` loaded:
 
 ```bash
 hs -c 'typeless.dump()'
@@ -87,63 +219,45 @@ hs -c 'typeless.micInUse()'
 hs -c 'typeless.log.setLogLevel("debug")'
 ```
 
-快捷键 `⌃⌥⌘T`（Control+Option+Command+T）会打开控制台并 dump 一次。成功关闭时日志里会有一行
-`closed "…" via AXPress`。`selfTest()` 用假数据跑匹配规则和调度逻辑，启动时也会自动跑一遍，
-失败会写进日志。
+⌃⌥⌘T (Control+Option+Command+T) opens the console and dumps once. A successful close logs
+`closed "…" via AXPress`.
 
-## 工作原理
+## Alternatives
 
-1. 用 Bundle ID `now.typeless.desktop` 找到进程，对 application 元素设
-   `AXManualAccessibility = true`，否则 Chromium 不暴露网页内容的 AX 树。所有 AX 查询设 1 秒超时，
-   Typeless 卡死不会拖住 Hammerspoon。
-2. 轮询触发。Chromium 不会为内容变化发 AX 通知，注册了 90 种一条都收不到。扫描节奏跟着麦克风走：
-   任一输入设备在用时，以及停用后的 10 秒内，每 0.15 秒扫一次；其余时间每 2 秒扫一次兜底。
-   付费卡片只会随一次听写的响应到达，所以空闲时不值得高频扫。
-3. 只扫子角色为 `AXDialog` 的窗口。悬浮条是 Electron 的 panel 窗口，标题 "Status"，子角色 `AXDialog`，
-   750×500，空闲时只有十几个节点；设置主窗口、登录和引导窗口是 `AXStandardWindow`，直接跳过。
-   没有子角色的窗口才退回宽度判断（不超过 900px 才扫）。
-4. 找到 `AXStaticText` 的值等于目标标题后，向上找到 `AXSubrole == AXUserInterfaceTooltip`
-   的容器（对应 HTML `role="tooltip"`），只在容器内找按钮。
-5. 候选按钮必须同时满足：`actionNames` 里有 `AXPress`、无名或名为 close / dismiss / x / ×、
-   边长不超过 40px。多个候选取最靠容器右上角的那个。带文字的按钮如 "Upgrade" 永远不会被点。
-   默认不做鼠标模拟；`clickFallback = true` 可以在 AXPress 被拒绝时退化为模拟点击。
-
-可调参数都在 `typeless_paywall_closer.lua` 顶部的 `config` 表里，也可以运行时改 `typeless.config`。
-
-## 已验证的事实（Typeless 2.5.0，2026-09-03）
-
-- 弹窗文案不在本地包里。服务端在 `/ai/voice_flow` 返回里带 `important_notification`，
-  结构是 `{type: "paywall", display: {title, description, icon}, behavior, actions}`，
-  `icon` 只有 `diamond`（Upgrade for enhanced accuracy）和 `sandglass`（High demand）两种。
-  客户端标记为 `paywall`，交给悬浮条渲染。在本地包里搜文案替换没有用；把处理 `paywall` 的两处调用打成空操作可以
-  （typeless-toolkit 就是这么做的），但要改 `app.asar`、处理完整性校验、在 macOS 上重签名，每次官方更新后重打。本项目不走这条路。
-- 卡片组件是 MUI Tooltip，`closable` 时右上角挂一个 `IconButton`，内含 16px `CloseIcon`，
-  没有 `aria-label`。两种卡片结构相同。
-- `AXEnhancedUserInterface` 和 `AXManualAccessibility` 是同一个开关，把前者设 false
-  会把整棵树关掉。
-- 真实弹窗多次被 AXPress 成功关闭，按钮 16×16，容器为 tooltip，从未触发过鼠标模拟。
-- `targetTitles` 另含 2.4.0 时期的 `Get unlimited words` / `获取无限字数`，来自 typeless-plusplus 的记录，本机未见过。
-  精确匹配整段标题，所以就算永远不出现也无害。
-
-## 同类项目
-
-| 项目 | 思路 | 平台 | 取舍 |
+| Project | Approach | Platform | Trade-off |
 |---|---|---|---|
-| [JeasonKim/typeless-paywall-gateway](https://github.com/JeasonKim/typeless-paywall-gateway) | 用隐藏设置 `__DEV_API_HOST` 把 API 指到本地代理，改写返回里的 `paywall` 通知 | macOS、Windows | 卡片完全不出现，不需要辅助功能权限；但全部语音和转写流量经过本地代理，依赖一个官方随时可能删掉的隐藏开关，安装要 Node 和 pnpm |
-| [Ayndpa/typeless-popup-remover](https://github.com/Ayndpa/typeless-popup-remover) | 改 `app.asar` 让弹窗渲染函数直接 return，并关掉 Electron 完整性校验 | Windows | 卡片完全不出现；但修改了应用本体，每次升级都要重打补丁 |
-| [timmyagentic/typeless-plusplus](https://github.com/timmyagentic/typeless-plusplus) | 原生 Swift 菜单栏 App，同样走辅助功能树点 ×，另做账号管理和额度守护 | macOS | 开源、MIT、有公证；但源码没有设置 `AXManualAccessibility`，作者自述真实弹窗尚未验证 |
-| [Jia131313/typeless-toolkit](https://github.com/Jia131313/typeless-toolkit) | 扫描 `app.asar`，把处理 `paywall` 的两处调用等长替换成空操作，同步完整性校验并重签名 | macOS、Windows | 生态里 star 最多，功能是多账号、词库同步、设备重置的超集；卡片完全不出现，但修改应用本体，每次官方更新后要重打 |
-| [liuxiaoyu-fiveleven/Typeless-AD-Skipper](https://github.com/liuxiaoyu-fiveleven/Typeless-AD-Skipper) | 辅助功能树里找卡片点 ×，和本项目同路 | macOS | 闭源，ad-hoc 签名未公证，二进制带反调试 |
+| [JeasonKim/typeless-paywall-gateway](https://github.com/JeasonKim/typeless-paywall-gateway) | Points the hidden `__DEV_API_HOST` setting at a local proxy that rewrites `paywall` notifications | macOS, Windows | Cards never appear and no Accessibility permission is needed, but all voice and transcript traffic flows through the proxy, it depends on a hidden switch the vendor can remove, and it needs Node and pnpm |
+| [Ayndpa/typeless-popup-remover](https://github.com/Ayndpa/typeless-popup-remover) | Patches `app.asar` so the card renderer returns early, disables Electron integrity checks | Windows | Cards never appear, but the app binary is modified and must be re-patched after every update |
+| [timmyagentic/typeless-plusplus](https://github.com/timmyagentic/typeless-plusplus) | Native Swift menu-bar app that presses the X via the accessibility tree, plus account and quota tooling | macOS | Open source, MIT, notarised; but the source does not set `AXManualAccessibility` and the author notes real cards are unverified |
+| [Jia131313/typeless-toolkit](https://github.com/Jia131313/typeless-toolkit) | Replaces the two `paywall` call sites in `app.asar` with same-length no-ops, fixes integrity data, re-signs | macOS, Windows | Most-starred in the ecosystem, with multi-account, dictionary sync and device reset on top; cards never appear, but the binary is modified and re-patched per update |
+| [liuxiaoyu-fiveleven/Typeless-AD-Skipper](https://github.com/liuxiaoyu-fiveleven/Typeless-AD-Skipper) | Finds the card in the accessibility tree and presses X, same route as this project | macOS | Closed source, ad-hoc signed, not notarised, binary contains anti-debugging logic |
 
-本项目选择"渲染后立即关掉"这条路，不改包、不拦流量，信任面最小，代价是卡片会闪一下。如果闪动不可接受，gateway 和 toolkit 是能做到不出现的开源方案，前者经过本地代理，后者修改应用本体。
+This project takes the "dismiss after render" route because it has the smallest trust surface:
+no binary patching, no traffic interception. If the brief flash is unacceptable, gateway and toolkit
+are the open-source options that prevent the card entirely, at the cost of a proxy or a patched app.
 
-## Typeless 升级后失效怎么办
+## Repository layout
 
-先 `hs -c 'typeless.dump()'` 看卡片出现时的树，对照 `typeless_paywall_closer.lua`
-顶部 `config` 里的阈值和 `alertContainer` / `M.matcher.chooseCloseButton` 两个函数调整。
-文案变了就改 `targetTitles`，改完跑一遍 `selfTest()`。付费文案由服务端按账号语言下发，
-把 Typeless 切成其他界面语言后标题可能变化，需要在 `targetTitles` 里补对应语言的标题。
+| Path | Purpose |
+|---|---|
+| `typeless_paywall_closer.lua` | The whole product. `~/.hammerspoon/typeless_paywall_closer.lua` symlinks here; `hs.reload()` picks up edits |
+| `install.sh` | Install, update, uninstall. Idempotent |
+| `launchd/org.hammerspoon.keepalive.plist` | LaunchAgent template; `__HOME__` is rendered by the installer |
+| `init.lua.example` | Reference `~/.hammerspoon/init.lua` |
+| `tools/asar_scan.js` | Grep Typeless's `app.asar` in place and print context |
+| `tools/asar_extract.js` | Extract `dist/` from `app.asar` into `./typeless_dist/` |
+| `tools/cgwin.swift` | List Typeless windows via CGWindowList, no Accessibility permission needed |
+| `docs/retrospective.md` | Investigation and implementation notes (Chinese) |
+| `CHANGELOG.md` | Release notes |
+
+Logs: `~/Library/Logs/typeless-paywall-closer/activity.log` (script) and `hammerspoon-launchd.log` (launchd).
+
+## Contributing
+
+Issues and pull requests are welcome, particularly dumps of the accessibility tree after a Typeless
+update, and target titles for other interface languages. Run `hs -c 'typeless.selfTest()'` before
+opening a pull request; it must report all checks passed.
 
 ## License
 
-MIT
+[MIT](LICENSE).
