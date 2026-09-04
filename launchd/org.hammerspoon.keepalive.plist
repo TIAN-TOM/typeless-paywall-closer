@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keeps Hammerspoon running. launchd starts it at login and restarts it within
+  seconds if it quits or crashes, so the paywall closer never silently stops.
+
+  install.sh renders this file into ~/Library/LaunchAgents with __HOME__
+  replaced by your home directory. launchd does not expand ~ or $HOME itself.
+
+  Manual install:
+    sed "s|__HOME__|$HOME|g" launchd/org.hammerspoon.keepalive.plist \
+      > ~/Library/LaunchAgents/org.hammerspoon.keepalive.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.hammerspoon.keepalive.plist
+
+  Stop for real (menu-bar Quit gets relaunched):
+    launchctl bootout gui/$(id -u)/org.hammerspoon.keepalive
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.hammerspoon.keepalive</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Applications/Hammerspoon.app/Contents/MacOS/Hammerspoon</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/typeless-paywall-closer/hammerspoon-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/typeless-paywall-closer/hammerspoon-launchd.log</string>
+</dict>
+</plist>

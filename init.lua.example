@@ -1,6 +1,6 @@
 -- Hammerspoon entry point.
 require("hs.ipc")          -- enables the `hs` command-line tool
-hs.autoLaunch(true)        -- start Hammerspoon at login
+hs.autoLaunch(true)        -- login item; install.sh also adds a launchd agent that relaunches Hammerspoon if it quits
 
 typeless = require("typeless_paywall_closer")
 typeless.start()

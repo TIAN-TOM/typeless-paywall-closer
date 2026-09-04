@@ -40,8 +40,8 @@ M.config = {
   targetTitles   = { "upgrade for enhanced accuracy", "high demand",
                      "get unlimited words", "获取无限字数" },
   micTrigger     = true,  -- false = scan at activeInterval all the time
-  activeInterval = 0.15,  -- seconds between scans while the mic is (or was just) in use
-  activeHold     = 10,    -- seconds to keep scanning fast after the mic goes quiet
+  activeInterval = 0.05,  -- seconds between scans while the mic is (or was just) in use; a scan costs ~3 ms
+  activeHold     = 30,    -- seconds to keep scanning fast after the mic goes quiet; slow responses still get fast polling
   idleInterval   = 2.0,   -- seconds between scans when idle; also the maintenance cadence
   axTimeout      = 1.0,   -- seconds before an AX query to Typeless is abandoned
   debounce       = 0.15,  -- seconds; coalesce bursts of AX notifications
