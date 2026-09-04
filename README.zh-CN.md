@@ -157,7 +157,8 @@ Hammerspoon 可能被手动退出、被内存压力杀掉，或者崩溃后没�
    （对应 HTML `role="tooltip"`），只在容器内找按钮。
 5. **按 ×。** 候选按钮必须支持 `AXPress`、无名或名为 close / dismiss / x / ×、边长不超过 40 px。
    多个候选取最靠容器右上角的那个。"Upgrade" 这类文字按钮永远不会被点。默认不做鼠标模拟；
-   `clickFallback = true` 只在 `AXPress` 被拒绝时退化为模拟点击。
+   `clickFallback = true` 只在 `AXPress` 被拒绝时退化为模拟点击。`pressDelay`（默认 0）表示发现卡片后等几秒再按，
+   让进场动画播完；0.3 左右会让消失不那么突兀，代价是卡片可见时间变长。
 
 所有阈值都在 `typeless_paywall_closer.lua` 顶部的 `config` 表里，也可以运行时通过 `typeless.config` 修改。
 

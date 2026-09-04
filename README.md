@@ -168,7 +168,9 @@ It is about 650 lines of Lua and is meant to be read before it is trusted.
 5. **Press the X.** A candidate must support `AXPress`, be unnamed or named close / dismiss / x / ×,
    and be at most 40 px on a side. With several candidates the one nearest the container's top-right
    corner wins. Text buttons such as "Upgrade" never qualify. Mouse simulation is off by default;
-   `clickFallback = true` enables it only if `AXPress` is refused.
+   `clickFallback = true` enables it only if `AXPress` is refused. `pressDelay` (default 0) waits that
+   many seconds before pressing, so the card's entrance animation can finish; around 0.3 makes the
+   dismissal look less abrupt at the cost of a longer flash.
 
 All thresholds live in the `config` table at the top of `typeless_paywall_closer.lua` and can be
 changed at runtime through `typeless.config`.

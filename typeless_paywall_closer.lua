@@ -50,6 +50,8 @@ M.config = {
   maxWindowWidth = 900,   -- fallback only, for windows that report no AXSubrole (floating bar is 750, hub >= 988)
   maxButtonSide  = 40,    -- the X icon is 16px; anything bigger is a text/CTA button
   pressCooldown  = 1.0,   -- seconds between presses; two cards may follow each other
+  pressDelay     = 0,     -- seconds to wait after spotting a card before pressing X; 0 = immediately.
+                          -- ~0.3 lets the card's entrance animation finish so the dismissal looks less abrupt
   clickFallback  = false, -- true = synthesise a click if a pressable button still refuses AXPress
   logLevel       = "info",
   logFile        = os.getenv("HOME") .. "/Library/Logs/typeless-paywall-closer/activity.log",
@@ -64,6 +66,7 @@ local state = {
   appWatcher = nil, watched = {}, lastPressAt = 0, trusted = false,
   enabled = true, lastAction = nil, closedCount = 0, menubar = nil,
   activeUntil = 0, lastScanAt = 0, lastMaintAt = 0, scanMode = "idle",
+  pendingPress = nil,
 }
 
 -- ---------------------------------------------------------------- helpers
@@ -294,6 +297,29 @@ local function press(c, how, title)
   return false
 end
 
+-- Press now, or after config.pressDelay. While a press is pending, later scans
+-- that find the same card do nothing; the timer re-checks that the button still
+-- exists before pressing, in case the card was closed by hand meanwhile.
+local function schedulePress(c, how, title)
+  local delay = tonumber(M.config.pressDelay) or 0
+  if delay <= 0 then return press(c, how, title) end
+  if state.pendingPress then
+    log.d("press already pending")
+    return false
+  end
+  state.pendingPress = hs.timer.doAfter(delay, function()
+    state.pendingPress = nil
+    if not state.enabled then return end
+    if not hasPressAction(c.el) then
+      log.d("pending press dropped: button gone")
+      return
+    end
+    press(c, how, title)
+  end)
+  log.d(string.format("press scheduled in %.2f s", delay))
+  return true
+end
+
 function M.scan(reason)
   if not state.appEl then return end
   local wins = attr(state.appEl, "AXWindows") or {}
@@ -320,7 +346,7 @@ function M.scan(reason)
           local all = collectButtons(container)
           local best, why = M.matcher.chooseCloseButton(all, frameOf(container))
           if best then
-            press(best, how, titleText)
+            schedulePress(best, how, titleText)
           else
             record("w", string.format("card \"%s\" found but %s; buttons: %s", titleText, why, describeCandidates(all)))
           end
@@ -606,6 +632,7 @@ function M.start()
 end
 
 function M.stop()
+  if state.pendingPress then state.pendingPress:stop(); state.pendingPress = nil end
   if state.appWatcher then state.appWatcher:stop() end
   if state.timer then state.timer:stop() end
   if state.menubar then state.menubar:delete() end

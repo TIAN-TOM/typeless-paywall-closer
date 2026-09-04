@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Dates are Australia/Syd
 ## Unreleased
 
 ### Added
+- `pressDelay` config: wait a set number of seconds after spotting a card before pressing X, so the entrance animation can finish and the dismissal looks less abrupt. Default 0 keeps the old behaviour.
 - launchd LaunchAgent `org.hammerspoon.keepalive` that starts Hammerspoon at login and relaunches it within seconds if it quits or crashes. Installed by `install.sh`, removed by `install.sh uninstall`, skipped with `KEEPALIVE=0`.
 - `CHANGELOG.md` and a Chinese README (`README.zh-CN.md`).
 
